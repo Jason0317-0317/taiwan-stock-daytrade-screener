@@ -1,0 +1,46 @@
+name: Daily Email Report
+
+on:
+  schedule:
+    # 00:00 UTC is 08:00 in Taipei.
+    - cron: "0 0 * * *"
+  workflow_dispatch:
+
+jobs:
+  send-report:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Generate stock report
+        run: python main.py
+
+      - name: Send email
+        uses: dawidd6/action-send-mail@v3
+        with:
+          server_address: smtp.gmail.com
+          server_port: 465
+          secure: true
+          username: ${{ secrets.MAIL_USERNAME }}
+          password: ${{ secrets.MAIL_PASSWORD }}
+          subject: Taiwan Stock Quant Daily Report
+          to: ${{ secrets.MAIL_TO }}
+          from: Taiwan Stock Quant Bot <${{ secrets.MAIL_USERNAME }}>
+          body: |
+            The daily Taiwan stock quant report has completed.
+
+            Repository:
+            https://github.com/Jason0317-0317/123
+          attachments: final_rankings.csv
