@@ -106,16 +106,27 @@ def download_batch(df_info):
 
 def score_and_rank(df):
     if df.empty: return df
-    factors = ['avg_amp', 'vol_ratio', 'ret_5', 'chip_proxy']
-    for f in factors:
-        df[f'{f}_z'] = (df[f] - df[f].mean()) / df[f].std()
-    
-    df['total_score'] = (
-        df['avg_amp_z'] * 0.30 +
-        df['vol_ratio_z'] * 0.25 +
-        df['ret_5_z'] * 0.25 +
-        df['chip_proxy_z'] * 0.20
-    )
+
+    weights = {
+        'avg_amp': 0.30,
+        'vol_ratio': 0.25,
+        'ret_5': 0.25,
+        'chip_proxy': 0.20,
+    }
+
+    total_weight = sum(weights.values())
+    df = df.copy()
+
+    for factor, weight in weights.items():
+        score_col = f'{factor}_score'
+        df[score_col] = df[factor].rank(pct=True) * 100
+        df[score_col] = df[score_col].fillna(0)
+
+    df['total_score'] = sum(
+        df[f'{factor}_score'] * weight
+        for factor, weight in weights.items()
+    ) / total_weight
+
     return df.sort_values(by='total_score', ascending=False)
 
 if __name__ == "__main__":
@@ -123,5 +134,5 @@ if __name__ == "__main__":
     # 執行前 1000 檔作為範例
     df_res = download_batch(df_info.iloc[:1000])
     df_ranked = score_and_rank(df_res)
-    df_ranked.to_csv("/home/ubuntu/final_rankings.csv", index=False)
-    print(f"Ranking completed. Found {len(df_ranked)} candidates.")
+    df_ranked.head(10).to_csv("/home/ubuntu/final_rankings.csv", index=False, encoding="utf-8-sig")
+    print(f"Ranking completed. Found {len(df_ranked)} candidates. Exported top 10.")
