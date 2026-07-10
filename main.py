@@ -16,19 +16,23 @@ def main():
     print("正在下載歷史數據並執行流動性篩選...")
     df_res = download_batch(df_info.iloc[:500])
     
-    # 3. 計算因子評分與排名
-    print("正在計算因子評分 (Z-score)...")
+    # 3. 計算因子加權平均分數與排名
+    print("正在計算因子加權平均分數...")
     df_ranked = score_and_rank(df_res)
     
-    # 4. 輸出結果
+    # 4. 只輸出前 10 名，作為每日 email 附件
     output_file = "final_rankings.csv"
-    df_ranked.to_csv(output_file, index=False)
+    top_10 = df_ranked.head(10)
+    top_10.to_csv(output_file, index=False, encoding="utf-8-sig")
     
     print("\n--- 最值得優先關注的前 10 名股票 ---")
-    top_10 = df_ranked.head(10)
-    print(top_10[['symbol', 'name', 'price', 'total_score']])
+    if top_10.empty:
+        print("今日沒有符合條件的股票。")
+    else:
+        print(top_10[['symbol', 'name', 'price', 'total_score']])
     
-    print(f"\n完整數據已儲存至: {output_file}")
+    print(f"\n前 10 名數據已儲存至: {output_file}")
+    print(f"完整候選數量: {len(df_ranked)}；email 附件只包含前 10 名。")
 
 if __name__ == "__main__":
     main()
