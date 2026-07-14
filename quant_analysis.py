@@ -14,6 +14,7 @@ MIN_AVG_AMOUNT = 500_000_000
 MIN_AVG_AMPLITUDE = 0.04
 MIN_PRICE = 20
 MAX_PRICE = 500
+DOWNLOAD_BATCH_SIZE = 80
 
 CHIP_COLUMNS = [
     "main_buy_5d",
@@ -117,6 +118,11 @@ def _get_ticker_frame(data, yf_symbol):
     return data.dropna(how="all")
 
 
+def _chunks(items, size):
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+
+
 def _atr(high, low, close, window=14):
     prev_close = close.shift(1)
     ranges = pd.concat(
@@ -151,80 +157,86 @@ def download_batch(df_info, data_dir="data", limit=None):
     if not yf_symbols:
         return pd.DataFrame()
 
-    print(f"Downloading data for {len(yf_symbols)} stocks...")
-    data = yf.download(
-        yf_symbols,
-        start=start_date,
-        end=end_date,
-        group_by="ticker",
-        threads=True,
-        progress=True,
-        auto_adjust=False,
-    )
-
     chip_factors = load_chip_factors(data_dir)
     chip_by_symbol = chip_factors.set_index("symbol") if not chip_factors.empty else pd.DataFrame()
 
     results = []
-    for yf_symbol in yf_symbols:
+    print(f"Downloading data for {len(yf_symbols)} stocks in batches of {DOWNLOAD_BATCH_SIZE}...")
+    for batch_no, batch_symbols in enumerate(_chunks(yf_symbols, DOWNLOAD_BATCH_SIZE), start=1):
+        print(f"Batch {batch_no}: {len(batch_symbols)} stocks")
         try:
-            df = _get_ticker_frame(data, yf_symbol)
-            if df.empty or len(df) < 25:
-                continue
-
-            close = pd.to_numeric(df["Close"], errors="coerce")
-            high = pd.to_numeric(df["High"], errors="coerce")
-            low = pd.to_numeric(df["Low"], errors="coerce")
-            volume = pd.to_numeric(df["Volume"], errors="coerce")
-            if close.isna().all() or volume.isna().all():
-                continue
-
-            amount = close * volume
-            amplitude = (high - low) / close.shift(1)
-            atr_14 = _atr(high, low, close, window=14)
-
-            avg_volume_20 = volume.rolling(window=20).mean().iloc[-1]
-            avg_volume_lots_20 = avg_volume_20 / 1000
-            avg_amount_20 = amount.rolling(window=20).mean().iloc[-1]
-            avg_amplitude_20 = amplitude.rolling(window=20).mean().iloc[-1]
-            current_price = close.iloc[-1]
-
-            if avg_volume_lots_20 < MIN_AVG_VOLUME_LOTS:
-                continue
-            if avg_amount_20 < MIN_AVG_AMOUNT:
-                continue
-            if avg_amplitude_20 < MIN_AVG_AMPLITUDE:
-                continue
-            if current_price < MIN_PRICE or current_price > MAX_PRICE:
-                continue
-
-            ret_5 = (close.iloc[-1] / close.iloc[-6]) - 1
-            ret_20 = (close.iloc[-1] / close.iloc[-21]) - 1
-            vol_ratio = volume.iloc[-1] / avg_volume_20 if avg_volume_20 else np.nan
-
-            symbol = symbol_map[yf_symbol]["symbol"]
-            chip_values = {col: 0 for col in CHIP_COLUMNS}
-            if not chip_by_symbol.empty and symbol in chip_by_symbol.index:
-                chip_values.update(chip_by_symbol.loc[symbol, CHIP_COLUMNS].to_dict())
-
-            results.append(
-                {
-                    "symbol": symbol,
-                    "name": symbol_map[yf_symbol]["name"],
-                    "price": current_price,
-                    "avg_vol": avg_volume_lots_20,
-                    "avg_amt": avg_amount_20,
-                    "avg_amp": avg_amplitude_20,
-                    "atr_14": atr_14.iloc[-1],
-                    "ret_5": ret_5,
-                    "ret_20": ret_20,
-                    "vol_ratio": vol_ratio,
-                    **chip_values,
-                }
+            data = yf.download(
+                batch_symbols,
+                start=start_date,
+                end=end_date,
+                group_by="ticker",
+                threads=True,
+                progress=False,
+                auto_adjust=False,
             )
         except Exception as exc:
-            print(f"Skip {yf_symbol}: {exc}")
+            print(f"Skip batch {batch_no}: {exc}")
             continue
+
+        for yf_symbol in batch_symbols:
+            try:
+                df = _get_ticker_frame(data, yf_symbol)
+                if df.empty or len(df) < 25:
+                    continue
+
+                close = pd.to_numeric(df["Close"], errors="coerce")
+                high = pd.to_numeric(df["High"], errors="coerce")
+                low = pd.to_numeric(df["Low"], errors="coerce")
+                volume = pd.to_numeric(df["Volume"], errors="coerce")
+                if close.isna().all() or volume.isna().all():
+                    continue
+
+                amount = close * volume
+                amplitude = (high - low) / close.shift(1)
+                atr_14 = _atr(high, low, close, window=14)
+
+                avg_volume_20 = volume.rolling(window=20).mean().iloc[-1]
+                avg_volume_lots_20 = avg_volume_20 / 1000
+                avg_amount_20 = amount.rolling(window=20).mean().iloc[-1]
+                avg_amplitude_20 = amplitude.rolling(window=20).mean().iloc[-1]
+                current_price = close.iloc[-1]
+
+                if avg_volume_lots_20 < MIN_AVG_VOLUME_LOTS:
+                    continue
+                if avg_amount_20 < MIN_AVG_AMOUNT:
+                    continue
+                if avg_amplitude_20 < MIN_AVG_AMPLITUDE:
+                    continue
+                if current_price < MIN_PRICE or current_price > MAX_PRICE:
+                    continue
+
+                ret_5 = (close.iloc[-1] / close.iloc[-6]) - 1
+                ret_20 = (close.iloc[-1] / close.iloc[-21]) - 1
+                vol_ratio = volume.iloc[-1] / avg_volume_20 if avg_volume_20 else np.nan
+
+                symbol = symbol_map[yf_symbol]["symbol"]
+                chip_values = {col: 0 for col in CHIP_COLUMNS}
+                if not chip_by_symbol.empty and symbol in chip_by_symbol.index:
+                    chip_values.update(chip_by_symbol.loc[symbol, CHIP_COLUMNS].to_dict())
+
+                results.append(
+                    {
+                        "symbol": symbol,
+                        "name": symbol_map[yf_symbol]["name"],
+                        "price": current_price,
+                        "avg_vol": avg_volume_lots_20,
+                        "avg_amt": avg_amount_20,
+                        "avg_amp": avg_amplitude_20,
+                        "atr_14": atr_14.iloc[-1],
+                        "ret_5": ret_5,
+                        "ret_20": ret_20,
+                        "vol_ratio": vol_ratio,
+                        **chip_values,
+                    }
+                )
+            except Exception as exc:
+                print(f"Skip {yf_symbol}: {exc}")
+                continue
 
     return pd.DataFrame(results)
 
