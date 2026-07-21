@@ -14,7 +14,7 @@
    - 對所有因子進行 Z-score 標準化。
    - 依四大因子權重計算 `total_score`。
 3. `main.py`: 整合執行入口，產出前 10 名 CSV 排名與文字分析報告。
-4. `.github/workflows/daily-email.yml`: 每天自動產生報告並寄出 email。
+4. `.github/workflows/daily-email.yml`: 週一至週五自動產生報告並寄出 email。
 
 ## 第一層：候選池篩選
 
@@ -103,13 +103,13 @@ Total Score =
 
 ## 自動寄信時間
 
-GitHub Actions 目前設定為每天台灣時間早上 04:00 執行。
+GitHub Actions 目前設定為週一至週五台灣時間早上 04:00 執行；週六、週日不執行也不寄信。
 
 ```yaml
-cron: "0 20 * * *"
+cron: "0 20 * * 0-4"
 ```
 
-GitHub Actions 使用 UTC 時區，因此 `20:00 UTC` 等於台灣時間隔天 `04:00`。
+GitHub Actions 使用 UTC 時區，因此週日至週四的 `20:00 UTC`，等於台灣時間週一至週五的 `04:00`。
 
 ## 安裝需求
 
