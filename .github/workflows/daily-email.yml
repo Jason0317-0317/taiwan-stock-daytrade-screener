@@ -2,8 +2,9 @@ name: Daily Email Report
 
 on:
   schedule:
-    # 20:00 UTC is 04:00 the next day in Taipei.
-    - cron: "0 20 * * *"
+    # Sunday-Thursday 20:00 UTC is Monday-Friday 04:00 in Taipei.
+    # Do not run or send email on Saturday and Sunday (Taipei time).
+    - cron: "0 20 * * 0-4"
   workflow_dispatch:
 
 jobs:
