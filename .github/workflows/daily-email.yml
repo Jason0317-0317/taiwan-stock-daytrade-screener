@@ -36,12 +36,10 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: Taiwan Stock Quant Daily Report
+          subject: 台股隔日當沖候選分析報告
           to: ${{ secrets.MAIL_TO }}
           from: Taiwan Stock Quant Bot <${{ secrets.MAIL_USERNAME }}>
+          html_body: file://report.html
           body: |
-            The daily Taiwan stock quant report has completed.
-
-            Repository:
-            https://github.com/Jason0317-0317/taiwan-stock-daytrade-screener
-          attachments: final_rankings.csv
+            台股隔日當沖候選分析報告已完成。若郵件系統無法顯示 HTML，請下載附件查看前 10 名詳細資料。
+          attachments: final_rankings.csv,report.html
