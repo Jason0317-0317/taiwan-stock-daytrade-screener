@@ -10,9 +10,10 @@
 2. `quant_analysis.py`: 核心分析腳本。
    - 排除 ETF、ETN、TDR，以及停牌、全額交割、處置股清單。
    - 依照 20 日均量、20 日均成交金額、20 日平均振幅與股價區間建立候選池。
-   - 計算報酬率、振幅、ATR、量能倍率、籌碼與信用交易因子。
+   - 先移除 OHLCV 不完整或過期的交易日，避免 Yahoo Finance 部分欄位缺失時仍產生排名。
+   - 計算報酬率、振幅、百分比 ATR、量能倍率、短期訊號、籌碼與信用交易因子。
    - 對所有因子進行 Z-score 標準化。
-   - 依四大因子權重計算 `total_score`。
+   - 依可用資料動態配置因子權重並計算 `total_score`。
 3. `main.py`: 整合執行入口，產出前 10 名 CSV 與 HTML 分析報告。
 4. `email_report.py`: 產生 Email 相容的排名圖、因子圖與個股判讀卡片。
 5. `.github/workflows/daily-email.yml`: 週一至週五自動產生報告並寄出 HTML email。
@@ -49,8 +50,11 @@ data/disposition.csv
 - 近 5 日報酬率 `ret_5`
 - 近 20 日報酬率 `ret_20`
 - 近 20 日平均振幅 `avg_amp`
-- ATR(14) `atr_14`
+- ATR(14) 百分比 `atr_pct`，以 ATR 除以股價，避免高價股因絕對波動金額而被高估
 - 成交量相對於 20 日均量倍率 `vol_ratio`
+- 近 1 日／3 日報酬率 `ret_1`, `ret_3`
+- 近 3 日平均量相對於 20 日均量 `vol_3_ratio`
+- 收盤價在 20 日高低區間的位置 `close_position_20`
 - 近 5 日主力買賣超 `main_buy_5d`
 - 外資近 5 日買賣超 `foreign_buy_5d`
 - 投信近 5 日買賣超 `investment_trust_buy_5d`
@@ -72,22 +76,27 @@ symbol,main_buy_5d,foreign_buy_5d,investment_trust_buy_5d,margin_change_pct,shor
 
 | 類別 | 組成 | 權重 |
 |---|---|---:|
-| 波動因子 | `avg_amp_z`, `atr_14_z` | 30% |
+沒有 `data/chip_factors.csv` 時，籌碼因子會明確停用：
+
+| 類別 | 組成 | 權重 |
+|---|---|---:|
+| 波動因子 | `avg_amp_z`, `atr_pct_z` | 25% |
 | 流動性因子 | `avg_vol_z`, `avg_amt_z`, `vol_ratio_z` | 25% |
-| 動能因子 | `ret_5_z`, `ret_20_z` | 25% |
-| 籌碼因子 | 主力、外資、投信、融資、融券反向分數 | 20% |
+| 中期動能 | `ret_5_z`, `ret_20_z` | 20% |
+| 短期訊號 | `ret_1_z`, `ret_3_z`, `vol_3_ratio_z`, `close_position_20_z` | 30% |
 
-公式：
-
-```text
-Total Score =
-波動因子 * 0.30
-+ 流動性因子 * 0.25
-+ 動能因子 * 0.25
-+ 籌碼因子 * 0.20
-```
+有有效籌碼資料時，權重為波動 20%、流動性 20%、中期動能 20%、短期訊號 25%、籌碼 15%。
 
 `total_score` 越高代表在候選股票中的綜合排名越前面。
+
+## 資料品質保護
+
+- 每檔股票只使用 Open、High、Low、Close、Volume 都完整且成交量大於 0 的交易日。
+- 最新完整交易日距離執行日超過 5 天時，該股票不會進入候選池。
+- 核心因子包含 NaN 或無限值時停止排名，不會再以 0 分掩蓋資料錯誤。
+- 健康候選少於 10 檔時，不寄股票排名，改寄「台股報告資料異常」通知。
+- Email 會顯示實際資料交易日與籌碼因子啟用狀態。
+- Python 套件採精確版本鎖定，降低第三方套件更新造成的每日行為差異。
 
 ## 輸出結果
 

@@ -26,6 +26,7 @@ jobs:
           pip install -r requirements.txt
 
       - name: Generate stock report
+        id: generate
         run: python main.py
 
       - name: Send email
@@ -36,7 +37,7 @@ jobs:
           secure: true
           username: ${{ secrets.MAIL_USERNAME }}
           password: ${{ secrets.MAIL_PASSWORD }}
-          subject: 台股隔日當沖候選分析報告
+          subject: ${{ steps.generate.outputs.report_status == 'error' && '台股報告資料異常' || '台股隔日當沖候選分析報告' }}
           to: ${{ secrets.MAIL_TO }}
           from: Taiwan Stock Quant Bot <${{ secrets.MAIL_USERNAME }}>
           html_body: file://report.html

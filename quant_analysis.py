@@ -15,6 +15,23 @@ MIN_AVG_AMPLITUDE = 0.04
 MIN_PRICE = 20
 MAX_PRICE = 500
 DOWNLOAD_BATCH_SIZE = 80
+MAX_DATA_AGE_DAYS = 5
+MIN_HEALTHY_CANDIDATES = 10
+
+CORE_FACTOR_COLUMNS = [
+    "price",
+    "avg_vol",
+    "avg_amt",
+    "avg_amp",
+    "atr_pct",
+    "ret_1",
+    "ret_3",
+    "ret_5",
+    "ret_20",
+    "vol_ratio",
+    "vol_3_ratio",
+    "close_position_20",
+]
 
 CHIP_COLUMNS = [
     "main_buy_5d",
@@ -32,6 +49,10 @@ CHIP_ALIASES = {
     "融資增減幅": "margin_change_pct",
     "融券增減幅": "short_change_pct",
 }
+
+
+class DataQualityError(RuntimeError):
+    """Raised when a report would otherwise be built from incomplete market data."""
 
 
 def get_stock_data(path="raw_stock_list.csv"):
@@ -118,6 +139,36 @@ def _get_ticker_frame(data, yf_symbol):
     return data.dropna(how="all")
 
 
+def _clean_price_frame(df):
+    required = ["Open", "High", "Low", "Close", "Volume"]
+    if not set(required).issubset(df.columns):
+        return pd.DataFrame()
+
+    clean = df.copy()
+    for column in required:
+        clean[column] = pd.to_numeric(clean[column], errors="coerce")
+    clean = clean.replace([np.inf, -np.inf], np.nan)
+    clean = clean.dropna(subset=required)
+    clean = clean[clean["Volume"] > 0]
+    return clean.sort_index()
+
+
+def _is_recent_trading_data(df, now=None):
+    if df.empty:
+        return False
+    latest = pd.Timestamp(df.index[-1])
+    if latest.tzinfo is not None:
+        latest = latest.tz_localize(None)
+    now = pd.Timestamp(now or datetime.now())
+    if now.tzinfo is not None:
+        now = now.tz_localize(None)
+    return (now.normalize() - latest.normalize()).days <= MAX_DATA_AGE_DAYS
+
+
+def _all_finite(values):
+    return all(np.isfinite(value) for value in values)
+
+
 def _chunks(items, size):
     for start in range(0, len(items), size):
         yield items[start : start + size]
@@ -180,8 +231,8 @@ def download_batch(df_info, data_dir="data", limit=None):
 
         for yf_symbol in batch_symbols:
             try:
-                df = _get_ticker_frame(data, yf_symbol)
-                if df.empty or len(df) < 25:
+                df = _clean_price_frame(_get_ticker_frame(data, yf_symbol))
+                if df.empty or len(df) < 25 or not _is_recent_trading_data(df):
                     continue
 
                 close = pd.to_numeric(df["Close"], errors="coerce")
@@ -200,6 +251,9 @@ def download_batch(df_info, data_dir="data", limit=None):
                 avg_amount_20 = amount.rolling(window=20).mean().iloc[-1]
                 avg_amplitude_20 = amplitude.rolling(window=20).mean().iloc[-1]
                 current_price = close.iloc[-1]
+                atr_pct = atr_14.iloc[-1] / current_price
+                ret_1 = (close.iloc[-1] / close.iloc[-2]) - 1
+                ret_3 = (close.iloc[-1] / close.iloc[-4]) - 1
 
                 if avg_volume_lots_20 < MIN_AVG_VOLUME_LOTS:
                     continue
@@ -213,6 +267,31 @@ def download_batch(df_info, data_dir="data", limit=None):
                 ret_5 = (close.iloc[-1] / close.iloc[-6]) - 1
                 ret_20 = (close.iloc[-1] / close.iloc[-21]) - 1
                 vol_ratio = volume.iloc[-1] / avg_volume_20 if avg_volume_20 else np.nan
+                vol_3_ratio = volume.tail(3).mean() / avg_volume_20 if avg_volume_20 else np.nan
+                high_20 = high.tail(20).max()
+                low_20 = low.tail(20).min()
+                close_position_20 = (
+                    (current_price - low_20) / (high_20 - low_20)
+                    if high_20 > low_20
+                    else np.nan
+                )
+
+                quality_values = [
+                    current_price,
+                    avg_volume_lots_20,
+                    avg_amount_20,
+                    avg_amplitude_20,
+                    atr_pct,
+                    ret_1,
+                    ret_3,
+                    ret_5,
+                    ret_20,
+                    vol_ratio,
+                    vol_3_ratio,
+                    close_position_20,
+                ]
+                if not _all_finite(quality_values):
+                    continue
 
                 symbol = symbol_map[yf_symbol]["symbol"]
                 chip_values = {col: 0 for col in CHIP_COLUMNS}
@@ -228,9 +307,15 @@ def download_batch(df_info, data_dir="data", limit=None):
                         "avg_amt": avg_amount_20,
                         "avg_amp": avg_amplitude_20,
                         "atr_14": atr_14.iloc[-1],
+                        "atr_pct": atr_pct,
+                        "ret_1": ret_1,
+                        "ret_3": ret_3,
                         "ret_5": ret_5,
                         "ret_20": ret_20,
                         "vol_ratio": vol_ratio,
+                        "vol_3_ratio": vol_3_ratio,
+                        "close_position_20": close_position_20,
+                        "data_date": pd.Timestamp(df.index[-1]).date().isoformat(),
                         **chip_values,
                     }
                 )
@@ -242,7 +327,9 @@ def download_batch(df_info, data_dir="data", limit=None):
 
 
 def z_score(series):
-    values = pd.to_numeric(series, errors="coerce").fillna(0)
+    values = pd.to_numeric(series, errors="coerce")
+    if not np.isfinite(values).all():
+        raise DataQualityError(f"Factor {series.name!r} contains missing or infinite values.")
     std = values.std(ddof=0)
     if std == 0 or np.isnan(std):
         return pd.Series(0, index=values.index)
@@ -252,12 +339,16 @@ def z_score(series):
 def add_reason(row):
     reason_map = {
         "avg_amp_z": "20日平均振幅高",
-        "atr_14_z": "ATR波動度高",
+        "atr_pct_z": "ATR百分比波動高",
         "avg_vol_z": "20日均量充足",
         "avg_amt_z": "成交金額大",
         "vol_ratio_z": "量能明顯放大",
+        "vol_3_ratio_z": "近3日量能升溫",
+        "ret_1_z": "近1日動能強",
+        "ret_3_z": "近3日動能強",
         "ret_5_z": "近5日動能強",
         "ret_20_z": "近20日趨勢佳",
+        "close_position_20_z": "收盤接近20日高位",
         "main_buy_5d_z": "主力近5日偏買",
         "foreign_buy_5d_z": "外資近5日偏買",
         "investment_trust_buy_5d_z": "投信近5日偏買",
@@ -271,17 +362,37 @@ def add_reason(row):
 
 def score_and_rank(df):
     if df.empty:
-        return df
+        raise DataQualityError("No stocks passed the market-data and liquidity checks.")
 
     df = df.copy()
+    missing_columns = [column for column in CORE_FACTOR_COLUMNS if column not in df.columns]
+    if missing_columns:
+        raise DataQualityError(f"Missing required factor columns: {', '.join(missing_columns)}")
+    invalid = ~np.isfinite(
+        df[CORE_FACTOR_COLUMNS].apply(pd.to_numeric, errors="coerce")
+    )
+    if invalid.any().any():
+        bad_columns = invalid.columns[invalid.any()].tolist()
+        raise DataQualityError(
+            f"Core factors contain missing or infinite values: {', '.join(bad_columns)}"
+        )
+    if len(df) < MIN_HEALTHY_CANDIDATES:
+        raise DataQualityError(
+            f"Only {len(df)} healthy candidates remain; minimum is {MIN_HEALTHY_CANDIDATES}."
+        )
+
     raw_factors = [
         "avg_amp",
-        "atr_14",
+        "atr_pct",
         "avg_vol",
         "avg_amt",
         "vol_ratio",
+        "vol_3_ratio",
+        "ret_1",
+        "ret_3",
         "ret_5",
         "ret_20",
+        "close_position_20",
         *CHIP_COLUMNS,
     ]
     for factor in raw_factors:
@@ -290,9 +401,12 @@ def score_and_rank(df):
         df[f"{factor}_z"] = z_score(df[factor])
 
     df["short_change_pct_inverse_z"] = -df["short_change_pct_z"]
-    df["volatility_factor"] = df[["avg_amp_z", "atr_14_z"]].mean(axis=1)
+    df["volatility_factor"] = df[["avg_amp_z", "atr_pct_z"]].mean(axis=1)
     df["liquidity_factor"] = df[["avg_vol_z", "avg_amt_z", "vol_ratio_z"]].mean(axis=1)
     df["momentum_factor"] = df[["ret_5_z", "ret_20_z"]].mean(axis=1)
+    df["short_term_factor"] = df[
+        ["ret_1_z", "ret_3_z", "vol_3_ratio_z", "close_position_20_z"]
+    ].mean(axis=1)
     df["chip_factor"] = df[
         [
             "main_buy_5d_z",
@@ -303,12 +417,27 @@ def score_and_rank(df):
         ]
     ].mean(axis=1)
 
-    df["total_score"] = (
-        df["volatility_factor"] * 0.30
-        + df["liquidity_factor"] * 0.25
-        + df["momentum_factor"] * 0.25
-        + df["chip_factor"] * 0.20
+    chip_available = any(
+        pd.to_numeric(df[column], errors="coerce").abs().sum() > 0
+        for column in CHIP_COLUMNS
     )
+    df["chip_data_available"] = chip_available
+    if chip_available:
+        df["total_score"] = (
+            df["volatility_factor"] * 0.20
+            + df["liquidity_factor"] * 0.20
+            + df["momentum_factor"] * 0.20
+            + df["short_term_factor"] * 0.25
+            + df["chip_factor"] * 0.15
+        )
+    else:
+        df["chip_factor"] = 0.0
+        df["total_score"] = (
+            df["volatility_factor"] * 0.25
+            + df["liquidity_factor"] * 0.25
+            + df["momentum_factor"] * 0.20
+            + df["short_term_factor"] * 0.30
+        )
     df["reason"] = df.apply(add_reason, axis=1)
 
     return df.sort_values(by="total_score", ascending=False).reset_index(drop=True)

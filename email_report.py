@@ -9,10 +9,11 @@ from quant_analysis import market_strength_summary
 
 
 FACTOR_ROWS = (
-    ("波動因子", "volatility_factor", "30%"),
-    ("流動性因子", "liquidity_factor", "25%"),
-    ("動能因子", "momentum_factor", "25%"),
-    ("籌碼因子", "chip_factor", "20%"),
+    ("波動因子", "volatility_factor"),
+    ("流動性因子", "liquidity_factor"),
+    ("中期動能", "momentum_factor"),
+    ("短期訊號", "short_term_factor"),
+    ("籌碼因子", "chip_factor"),
 )
 
 
@@ -77,8 +78,27 @@ def _stock_card(row: pd.Series) -> str:
     reason = html.escape(str(row.get("reason", "綜合條件相對均衡")))
 
     factor_rows = []
-    for label, column, weight in FACTOR_ROWS:
+    chip_available = bool(row.get("chip_data_available", False))
+    weights = (
+        {
+            "volatility_factor": "20%",
+            "liquidity_factor": "20%",
+            "momentum_factor": "20%",
+            "short_term_factor": "25%",
+            "chip_factor": "15%",
+        }
+        if chip_available
+        else {
+            "volatility_factor": "25%",
+            "liquidity_factor": "25%",
+            "momentum_factor": "20%",
+            "short_term_factor": "30%",
+            "chip_factor": "停用",
+        }
+    )
+    for label, column in FACTOR_ROWS:
         value = _number(row.get(column))
+        weight = weights[column]
         factor_rows.append(
             '<tr><td style="padding:5px 8px 5px 0;width:88px;font-size:12px">'
             f'{label}</td><td style="padding:5px 8px">{_factor_bar(value)}</td>'
@@ -96,7 +116,7 @@ def _stock_card(row: pd.Series) -> str:
         (
             _metric("20 日平均振幅", f"{_number(row.get('avg_amp')):.2%}"),
             _metric("當日量比", f"{_number(row.get('vol_ratio')):.2f} 倍"),
-            _metric("5 日／20 日動能", f"{_number(row.get('ret_5')):+.2%} / {_number(row.get('ret_20')):+.2%}"),
+            _metric("1 日／3 日動能", f"{_number(row.get('ret_1')):+.2%} / {_number(row.get('ret_3')):+.2%}"),
         )
     )
 
@@ -133,6 +153,16 @@ def render_email_report(
     avg_amp = _number(top_10["avg_amp"].mean()) if not top_10.empty else 0
     avg_amount = _number(top_10["avg_amt"].mean()) / 100_000_000 if not top_10.empty else 0
     positive_5d = _number((top_10["ret_5"] > 0).mean()) if not top_10.empty else 0
+    data_date = (
+        str(top_10["data_date"].max())
+        if not top_10.empty and "data_date" in top_10.columns
+        else "未知"
+    )
+    chip_status = (
+        "已啟用"
+        if not top_10.empty and bool(top_10.iloc[0].get("chip_data_available", False))
+        else "無資料，已停用"
+    )
     cards = "".join(_stock_card(row) for _, row in top_10.iterrows())
     if not cards:
         cards = '<div style="padding:24px;background:#fff;border-radius:10px">今日沒有符合條件的股票。</div>'
@@ -154,8 +184,8 @@ def render_email_report(
       {_metric("前十平均成交額", f"{avg_amount:,.2f} 億")}
     </tr><tr>
       {_metric("前十 5 日動能為正", f"{positive_5d:.0%}")}
-      {_metric("報告股票數", f"{len(top_10)} 檔")}
-      {_metric("資料用途", "盤前觀察")}
+      {_metric("資料交易日", data_date)}
+      {_metric("籌碼因子", chip_status)}
     </tr></table>
 
     <div style="background:#fff;border-radius:12px;padding:16px;margin:14px 0">
