@@ -19,11 +19,16 @@ def sample_rankings():
                 "vol_ratio": 1.8,
                 "ret_5": 0.08,
                 "ret_20": 0.12,
+                "ret_1": 0.02,
+                "ret_3": 0.05,
+                "data_date": "2026-07-18",
                 "total_score": 2.1,
                 "volatility_factor": 1.4,
                 "liquidity_factor": 2.0,
                 "momentum_factor": 1.8,
+                "short_term_factor": 2.2,
                 "chip_factor": -0.2,
+                "chip_data_available": False,
                 "reason": "成交金額大、近5日動能強",
             },
             {
@@ -37,11 +42,16 @@ def sample_rankings():
                 "vol_ratio": 1.3,
                 "ret_5": -0.01,
                 "ret_20": 0.05,
+                "ret_1": -0.01,
+                "ret_3": 0.01,
+                "data_date": "2026-07-18",
                 "total_score": 1.2,
                 "volatility_factor": 1.8,
                 "liquidity_factor": 1.1,
                 "momentum_factor": 0.4,
+                "short_term_factor": 0.5,
                 "chip_factor": 0.3,
+                "chip_data_available": False,
                 "reason": "20日平均振幅高",
             },
         ]
@@ -65,8 +75,11 @@ def test_render_email_report_creates_individual_cards_and_charts():
     assert "聯發科 &lt;測試&gt;" in report
     assert "波動因子" in report
     assert "流動性因子" in report
-    assert "動能因子" in report
+    assert "中期動能" in report
+    assert "短期訊號" in report
     assert "籌碼因子" in report
+    assert "無資料，已停用" in report
+    assert "2026-07-18" in report
     assert "18,000.00" not in report
     assert "180.00 億" in report
 
@@ -81,4 +94,4 @@ def test_render_email_report_handles_empty_result():
     )
 
     assert "今日沒有符合條件的股票" in report
-    assert "報告股票數" in report
+    assert "資料交易日" in report

@@ -1,82 +1,106 @@
+from datetime import datetime
+
+import numpy as np
 import pandas as pd
+import pytest
 
-from quant_analysis import score_and_rank
+from quant_analysis import (
+    DataQualityError,
+    _clean_price_frame,
+    _is_recent_trading_data,
+    score_and_rank,
+)
 
 
-def test_score_and_rank_orders_by_total_score():
-    df = pd.DataFrame(
-        [
+def sample_candidates(count=12, chip=False):
+    rows = []
+    for index in range(count):
+        strength = index + 1
+        rows.append(
             {
-                "symbol": "1111",
-                "name": "Low",
-                "price": 30.0,
-                "avg_vol": 1000.0,
-                "avg_amt": 30000.0,
-                "avg_amp": 0.01,
-                "atr_14": 1.0,
-                "ret_5": 0.01,
-                "ret_20": 0.01,
-                "vol_ratio": 1.0,
-                "main_buy_5d": -100,
-                "foreign_buy_5d": -80,
-                "investment_trust_buy_5d": -30,
-                "margin_change_pct": -0.01,
-                "short_change_pct": 0.02,
-            },
-            {
-                "symbol": "2222",
-                "name": "High",
-                "price": 50.0,
-                "avg_vol": 5000.0,
-                "avg_amt": 250000.0,
-                "avg_amp": 0.08,
-                "atr_14": 5.0,
-                "ret_5": 0.12,
-                "ret_20": 0.2,
-                "vol_ratio": 3.0,
-                "main_buy_5d": 300,
-                "foreign_buy_5d": 250,
-                "investment_trust_buy_5d": 120,
-                "margin_change_pct": 0.03,
-                "short_change_pct": -0.01,
-            },
-            {
-                "symbol": "3333",
-                "name": "Mid",
-                "price": 40.0,
-                "avg_vol": 3000.0,
-                "avg_amt": 120000.0,
-                "avg_amp": 0.04,
-                "atr_14": 3.0,
-                "ret_5": 0.05,
-                "ret_20": 0.08,
-                "vol_ratio": 1.8,
-                "main_buy_5d": 50,
-                "foreign_buy_5d": 40,
-                "investment_trust_buy_5d": 10,
-                "margin_change_pct": 0.01,
-                "short_change_pct": 0.0,
-            },
-        ]
-    )
+                "symbol": f"{1000 + index}",
+                "name": f"Stock {index}",
+                "price": 30.0 + index,
+                "avg_vol": 6_000.0 + strength * 100,
+                "avg_amt": 600_000_000.0 + strength * 1_000_000,
+                "avg_amp": 0.04 + strength / 1000,
+                "atr_14": 2.0 + strength / 10,
+                "atr_pct": 0.03 + strength / 1000,
+                "ret_1": strength / 1000,
+                "ret_3": strength / 500,
+                "ret_5": strength / 400,
+                "ret_20": strength / 300,
+                "vol_ratio": 1.0 + strength / 20,
+                "vol_3_ratio": 1.0 + strength / 15,
+                "close_position_20": 0.4 + strength / 30,
+                "main_buy_5d": strength if chip else 0,
+                "foreign_buy_5d": strength if chip else 0,
+                "investment_trust_buy_5d": strength if chip else 0,
+                "margin_change_pct": strength / 1000 if chip else 0,
+                "short_change_pct": -strength / 1000 if chip else 0,
+                "data_date": "2026-07-29",
+            }
+        )
+    return pd.DataFrame(rows)
 
-    ranked = score_and_rank(df)
 
-    assert ranked.iloc[0]["symbol"] == "2222"
+def test_score_and_rank_uses_short_term_factors_and_disables_missing_chip_data():
+    ranked = score_and_rank(sample_candidates())
+
+    assert ranked.iloc[0]["symbol"] == "1011"
     assert ranked["total_score"].is_monotonic_decreasing
+    assert not ranked["chip_data_available"].any()
+    assert (ranked["chip_factor"] == 0).all()
     assert {
-        "avg_amp_z",
-        "atr_14_z",
-        "vol_ratio_z",
-        "ret_5_z",
-        "foreign_buy_5d_z",
-        "short_change_pct_inverse_z",
+        "atr_pct_z",
+        "ret_1_z",
+        "ret_3_z",
+        "vol_3_ratio_z",
+        "close_position_20_z",
+        "short_term_factor",
     }.issubset(ranked.columns)
 
 
-def test_score_and_rank_returns_empty_dataframe_for_empty_input():
-    empty = pd.DataFrame()
+def test_score_and_rank_enables_chip_factor_when_data_exists():
+    ranked = score_and_rank(sample_candidates(chip=True))
 
-    ranked = score_and_rank(empty)
+    assert ranked["chip_data_available"].all()
+    assert ranked["chip_factor"].abs().sum() > 0
 
-    assert ranked.empty
+
+def test_score_and_rank_rejects_nan_instead_of_silently_scoring_it():
+    candidates = sample_candidates()
+    candidates.loc[0, "price"] = np.nan
+
+    with pytest.raises(DataQualityError, match="price"):
+        score_and_rank(candidates)
+
+
+def test_score_and_rank_rejects_too_few_candidates():
+    with pytest.raises(DataQualityError, match="minimum"):
+        score_and_rank(sample_candidates(count=5))
+
+
+def test_clean_price_frame_drops_partial_latest_row():
+    index = pd.date_range("2026-07-27", periods=3, freq="D")
+    frame = pd.DataFrame(
+        {
+            "Open": [100, 101, 102],
+            "High": [102, 103, 104],
+            "Low": [99, 100, 101],
+            "Close": [101, 102, np.nan],
+            "Volume": [1_000, 1_100, 1_200],
+        },
+        index=index,
+    )
+
+    clean = _clean_price_frame(frame)
+
+    assert clean.index[-1] == pd.Timestamp("2026-07-28")
+    assert clean.notna().all().all()
+
+
+def test_recent_data_check_rejects_stale_market_data():
+    frame = pd.DataFrame(index=[pd.Timestamp("2026-07-20")])
+
+    assert not _is_recent_trading_data(frame, now=datetime(2026, 7, 30))
